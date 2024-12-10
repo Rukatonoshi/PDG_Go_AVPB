@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"log"
+	"regexp"
 	"strings"
 
 	"golang.org/x/tools/go/cfg"
@@ -130,22 +131,25 @@ func genDot(cg *cfg.CFG) string {
 			continue
 		}
 		blockID := fmt.Sprintf("block_%d", block.Index)
-		dot += fmt.Sprintf("  %s [label=\"%s\"];\n", blockID, block.String())
+		// DEBUG
+		//blockLabel := block.String()
+		//dot += fmt.Sprintf("  %s [label=\"%s\"];\n", blockID, blockLabel)
 		var prevNodeID string
 		var lastNodeID string
 		var loopID string
-		if len(block.Nodes) == 0 {
-			for _, succ := range block.Succs {
-				succID := fmt.Sprintf("block_%d", succ.Index)
-				color := "black"
-				if succ.Kind == cfg.KindIfThen || succ.Kind == cfg.KindForBody {
-					color = "purple"
-				} else if succ.Kind == cfg.KindIfDone || succ.Kind == cfg.KindIfElse || succ.Kind == cfg.KindForDone {
-					color = "red"
+		// DEBUG basic blocks
+		/*		if len(block.Nodes) == 0 {
+				for _, succ := range block.Succs {
+					succID := fmt.Sprintf("block_%d", succ.Index)
+					color := "black"
+					if succ.Kind == cfg.KindIfThen || succ.Kind == cfg.KindForBody {
+						color = "yellow"
+					} else if succ.Kind == cfg.KindIfDone || succ.Kind == cfg.KindIfElse || succ.Kind == cfg.KindForDone {
+						color = "red"
+					}
+					dot += fmt.Sprintf("  %s -> %s [color=\"%s\"];\n", blockID, succID, color)
 				}
-				dot += fmt.Sprintf("  %s -> %s [color=\"%s\"];\n", blockID, succID, color)
-			}
-		}
+			} */
 		for i, node := range block.Nodes {
 			nodeID := fmt.Sprintf("%s_node_%d", blockID, i)
 			switch n := node.(type) {
@@ -219,27 +223,32 @@ func genDot(cg *cfg.CFG) string {
 				cond := getValue(n.Cond)
 				dot += fmt.Sprintf("  %s [label=\"if %s\"];\n", nodeID, cond)
 				thenBlockID := fmt.Sprintf("block_%d", block.Succs[0].Index)
-				dot += fmt.Sprintf("  %s -> %s [label=\"true\"];\n", nodeID, thenBlockID)
+				thenBlockLabel := cg.Blocks[block.Succs[0].Index].String()
+				dot += fmt.Sprintf("  %s -> %s [label=\"%s\" color=\"yellow\"];\n", nodeID, thenBlockID, thenBlockLabel)
 				if n.Else != nil {
 					elseBlockID := fmt.Sprintf("block_%d", block.Succs[1].Index)
-					dot += fmt.Sprintf("  %s -> %s [label=\"false\"];\n", nodeID, elseBlockID)
+					elseBlockLabel := cg.Blocks[block.Succs[1].Index].String()
+					dot += fmt.Sprintf("  %s -> %s [label=\"%s\" color=\"red\"];\n", nodeID, elseBlockID, elseBlockLabel)
 				}
 			case *ast.ForStmt:
 				loopID = nodeID
 				cond := getValue(n.Cond)
 				dot += fmt.Sprintf("  %s [label=\"for %s\"];\n", nodeID, cond)
 				bodyBlockID := fmt.Sprintf("block_%d", block.Succs[0].Index)
-				dot += fmt.Sprintf("  %s -> %s [label=\"true\"];\n", nodeID, bodyBlockID)
+				bodyBlockLabel := cg.Blocks[block.Succs[0].Index].String()
+				dot += fmt.Sprintf("  %s -> %s [label=\"%s\" color=\"yellow\"];\n", nodeID, bodyBlockID, bodyBlockLabel)
 				postBlockID := fmt.Sprintf("block_%d", block.Succs[1].Index)
-				dot += fmt.Sprintf("  %s -> %s [label=\"false\"];\n", nodeID, postBlockID)
+				postBlockLabel := cg.Blocks[block.Succs[1].Index].String()
+				dot += fmt.Sprintf("  %s -> %s [label=\"%s\" color=\"red\"];\n", nodeID, postBlockID, postBlockLabel)
 			case *ast.BranchStmt:
-				//				fmt.Printf("TESTING %s", n.Label.Obj)
+				// Handle BranchStmt nodes differently
 				switch n.Tok {
 				case token.CONTINUE:
 					dot += fmt.Sprintf("  %s [label=\"continue\"];\n", nodeID)
-					dot += fmt.Sprintf("  %s -> %s;\n", nodeID, loopID)
+					dot += fmt.Sprintf("  %s -> %s [label=\"continue\"];\n", nodeID, loopID)
 				case token.BREAK:
 					dot += fmt.Sprintf("  %s [label=\"break\"];\n", nodeID)
+					dot += fmt.Sprintf("  %s -> %s [label=\"break\"];\n", nodeID, loopID)
 				}
 			default:
 				fmt.Printf("Node type: %T ==> %s\n", node, nodeID) // debugging statement
@@ -247,9 +256,11 @@ func genDot(cg *cfg.CFG) string {
 			}
 			if prevNodeID != "" {
 				dot += fmt.Sprintf("  %s -> %s;\n", prevNodeID, nodeID)
-			} else {
-				dot += fmt.Sprintf("  %s -> %s;\n", blockID, nodeID)
 			}
+			// DEBUG
+			/* else {
+				dot += fmt.Sprintf("  %s -> %s;\n", blockID, nodeID)
+			} */
 			prevNodeID = nodeID
 			lastNodeID = nodeID
 		}
@@ -258,7 +269,7 @@ func genDot(cg *cfg.CFG) string {
 			fmt.Printf("Block type: %s %d\n", succ.Kind, succ.Index) // debugging statement
 			color := "black"
 			if succ.Kind == cfg.KindIfThen || succ.Kind == cfg.KindForBody {
-				color = "purple"
+				color = "yellow"
 			} else if succ.Kind == cfg.KindIfDone || succ.Kind == cfg.KindIfElse || succ.Kind == cfg.KindForDone {
 				color = "red"
 			}
@@ -266,7 +277,32 @@ func genDot(cg *cfg.CFG) string {
 			if lastNodeID == "" {
 				continue
 			}
-			dot += fmt.Sprintf("  %s -> %s [color=\"%s\"];\n", lastNodeID, succID, color)
+
+			// Check if the successor block has nodes
+			succBlock := cg.Blocks[succ.Index]
+			if len(succBlock.Nodes) > 0 {
+				firstSuccNodeID := fmt.Sprintf("block_%d_node_0", succ.Index)
+				succBlockLabel := succBlock.String()
+				if strings.Contains(succBlockLabel, "(IfDone)") || strings.Contains(succBlockLabel, "(IfThen)") || strings.Contains(succBlockLabel, "(For") {
+					dot += fmt.Sprintf("  %s -> %s [color=\"%s\" label=\"%s\" fontsize=14 decorate=true];\n", lastNodeID, firstSuccNodeID, color, succBlockLabel)
+				} else {
+					dot += fmt.Sprintf("  %s -> %s [color=\"%s\"];\n", lastNodeID, firstSuccNodeID, color)
+				}
+			} else {
+				// If the successor block does not have nodes, find the next block with nodes
+				nextBlockWithNodes := findNextBlockWithNodes(cg, int(succ.Index))
+				if nextBlockWithNodes != nil {
+					firstSuccNodeID := fmt.Sprintf("block_%d_node_0", nextBlockWithNodes.Index)
+					succBlockLabel := nextBlockWithNodes.String()
+					if strings.Contains(succBlockLabel, "(IfDone)") || strings.Contains(succBlockLabel, "(IfThen)") || strings.Contains(succBlockLabel, "(For") {
+						dot += fmt.Sprintf("  %s -> %s [color=\"%s\" label=\"%s\" fontsize=14 decorate=true];\n", lastNodeID, firstSuccNodeID, color, succBlockLabel)
+					} else {
+						dot += fmt.Sprintf("  %s -> %s [color=\"%s\"];\n", lastNodeID, firstSuccNodeID, color)
+					}
+				} else {
+					dot += fmt.Sprintf("  %s -> %s [color=\"%s\"];\n", lastNodeID, succID, color)
+				}
+			}
 		}
 	}
 	for varName, nodes := range variables {
@@ -276,32 +312,56 @@ func genDot(cg *cfg.CFG) string {
 			}
 		}
 	}
+
+	re := regexp.MustCompile(`label="block \d+ ([^"]+)"`)
+	dot = re.ReplaceAllString(dot, `label="$1"`)
+
 	dot += "}\n"
+
 	return dot
+}
+
+func findNextBlockWithNodes(cg *cfg.CFG, startIndex int) *cfg.Block {
+	visited := make(map[int]bool)
+	queue := []int{startIndex}
+
+	for len(queue) > 0 {
+		currentIndex := queue[0]
+		queue = queue[1:]
+		visited[currentIndex] = true
+
+		currentBlock := cg.Blocks[currentIndex]
+		if len(currentBlock.Nodes) > 0 {
+			return currentBlock
+		}
+
+		for _, succ := range currentBlock.Succs {
+			if !visited[int(succ.Index)] {
+				queue = append(queue, int(succ.Index))
+			}
+		}
+	}
+
+	return nil
 }
 
 func main() {
 	src := `
 package main
 
-func main() {
-	testString = "Some string"
-	fib(n)
-}
-
-func fib(int n) (c int) {
-	a = 0
-	b = 1
-
-	if n < 2 {
-		return n
-	}
-
+func test_main() {
+	a := 0
+	b := 1
+	c := 3
+	n := 4
 	for i := 1; i < n; i++ {
 		c = a + b
 		a = b
-		if c == b {
+		if c > b {
+			b = a + c
 			continue
+		} else {
+			break
 		}
 		b = c
 	}
