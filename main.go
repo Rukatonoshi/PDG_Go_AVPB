@@ -19,6 +19,8 @@ func printCFG(cg *cfg.CFG) {
 			switch n := node.(type) {
 			case *ast.DeclStmt:
 				printValueSpec(n.Decl.(*ast.GenDecl).Specs[0].(*ast.ValueSpec))
+			case *ast.ValueSpec:
+				printValueSpec(n)
 			case *ast.AssignStmt:
 				printAssignStmt(n)
 			case *ast.ReturnStmt:
@@ -124,6 +126,14 @@ func getValue(expr ast.Expr) string {
 }
 
 func genDot(cg *cfg.CFG) string {
+	// CHEPIN
+	var P, M, C, T int
+	// Sets to keep track of variables
+	inputVars := make(map[string]int)     // P
+	modifiedVars := make(map[string]bool) // M
+	controlVars := make(map[string]bool)  // C
+	unusedVars := make(map[string]bool)   // T
+
 	dot := "digraph G {\n"
 	variables := make(map[string][]string)
 	for _, block := range cg.Blocks {
@@ -153,6 +163,17 @@ func genDot(cg *cfg.CFG) string {
 		for i, node := range block.Nodes {
 			nodeID := fmt.Sprintf("%s_node_%d", blockID, i)
 			switch n := node.(type) {
+			case *ast.ValueSpec:
+				for i, name := range n.Names {
+					value := "nul"
+					if i < len(n.Values) {
+						value = getValue(n.Values[i])
+					}
+					dot += fmt.Sprintf("  %s [label=\"%s = %s\"];\n", nodeID, name.Name, value)
+					variables[name.Name] = append(variables[name.Name], nodeID)
+					inputVars[name.Name]++
+				}
+
 			case *ast.DeclStmt:
 				valueSpec := n.Decl.(*ast.GenDecl).Specs[0].(*ast.ValueSpec)
 				for j, name := range valueSpec.Names {
@@ -162,6 +183,7 @@ func genDot(cg *cfg.CFG) string {
 					}
 					dot += fmt.Sprintf("  %s [label=\"%s = %s\"];\n", nodeID, name.Name, value)
 					variables[name.Name] = append(variables[name.Name], nodeID)
+					inputVars[name.Name]++
 				}
 			case *ast.AssignStmt:
 				for j, lhs := range n.Lhs {
@@ -172,6 +194,10 @@ func genDot(cg *cfg.CFG) string {
 						}
 						dot += fmt.Sprintf("  %s [label=\"%s = %s\"];\n", nodeID, ident.Name, value)
 						variables[ident.Name] = append(variables[ident.Name], nodeID)
+						inputVars[ident.Name]++
+						if _, isBinaryExpr := n.Rhs[j].(*ast.BinaryExpr); isBinaryExpr {
+							modifiedVars[ident.Name] = true
+						}
 					}
 				}
 			case *ast.ReturnStmt:
@@ -202,8 +228,11 @@ func genDot(cg *cfg.CFG) string {
 				varName := n.X.(*ast.Ident).Name
 				dot += fmt.Sprintf("  %s [label=\"%s %s\"];\n", nodeID, n.X.(*ast.Ident).Name, n.Tok.String())
 				variables[varName] = append(variables[varName], nodeID)
+				modifiedVars[varName] = true
 			case *ast.BinaryExpr:
 				dot += fmt.Sprintf("  %s [label=\"%s %s %s\"];\n", nodeID, getValue(n.X), n.Op.String(), getValue(n.Y))
+				controlVars[getValue(n.X)] = true
+				controlVars[getValue(n.Y)] = true
 			case *ast.CallExpr:
 				funcName := getValue(n.Fun)
 				args := []string{}
@@ -222,6 +251,9 @@ func genDot(cg *cfg.CFG) string {
 			case *ast.IfStmt:
 				cond := getValue(n.Cond)
 				dot += fmt.Sprintf("  %s [label=\"if %s\"];\n", nodeID, cond)
+
+				controlVars[getValue(n.Cond)] = true
+
 				thenBlockID := fmt.Sprintf("block_%d", block.Succs[0].Index)
 				thenBlockLabel := cg.Blocks[block.Succs[0].Index].String()
 				dot += fmt.Sprintf("  %s -> %s [label=\"%s\" color=\"yellow\"];\n", nodeID, thenBlockID, thenBlockLabel)
@@ -234,6 +266,9 @@ func genDot(cg *cfg.CFG) string {
 				loopID = nodeID
 				cond := getValue(n.Cond)
 				dot += fmt.Sprintf("  %s [label=\"for %s\"];\n", nodeID, cond)
+
+				controlVars[getValue(n.Cond)] = true
+
 				bodyBlockID := fmt.Sprintf("block_%d", block.Succs[0].Index)
 				bodyBlockLabel := cg.Blocks[block.Succs[0].Index].String()
 				dot += fmt.Sprintf("  %s -> %s [label=\"%s\" color=\"yellow\"];\n", nodeID, bodyBlockID, bodyBlockLabel)
@@ -266,7 +301,7 @@ func genDot(cg *cfg.CFG) string {
 		}
 		for _, succ := range block.Succs {
 			succID := fmt.Sprintf("block_%d", succ.Index)
-			fmt.Printf("Block type: %s %d\n", succ.Kind, succ.Index) // debugging statement
+			//fmt.Printf("Block type: %s %d\n", succ.Kind, succ.Index) // debugging statement
 			color := "black"
 			if succ.Kind == cfg.KindIfThen || succ.Kind == cfg.KindForBody {
 				color = "yellow"
@@ -313,6 +348,60 @@ func genDot(cg *cfg.CFG) string {
 		}
 	}
 
+	// Determine unused variables
+	/*	for varName := range inputVars {
+		if !modifiedVars[varName] && !controlVars[varName] {
+			unusedVars[varName] = true
+		}
+	} */
+
+	// Remove intersections between sets
+	for varName := range controlVars {
+		delete(inputVars, varName)
+		delete(modifiedVars, varName)
+	}
+	for varName := range modifiedVars {
+		delete(inputVars, varName)
+	}
+
+	for varName := range inputVars {
+		if inputVars[varName] == 1 {
+			unusedVars[varName] = true
+			delete(inputVars, varName)
+		}
+	}
+
+	// Calculate the sizes of the sets
+	P = len(inputVars)
+	M = len(modifiedVars)
+	C = len(controlVars)
+	T = len(unusedVars)
+
+	// Calculate Chepin metric
+	Q := float64(P) + 2*float64(M) + 3*float64(C) + 0.5*float64(T)
+	fmt.Println(strings.Repeat("-", 18))
+	fmt.Println("P: ", inputVars)
+	fmt.Println("M: ", modifiedVars)
+	fmt.Println("C: ", controlVars)
+	fmt.Println("T: ", unusedVars)
+	fmt.Println("Chepin score: ", Q)
+	//fmt.Println("Variables list: ", variables)
+
+	// Calculate cyclomatic complexity
+	numEdges := 0
+	numNodes := 0
+	for _, block := range cg.Blocks {
+		if block.Live {
+			numNodes++
+			numEdges += len(block.Succs)
+		}
+	}
+	cyclomaticComplexity := numEdges - numNodes + 2
+	fmt.Println(strings.Repeat("-", 18))
+	fmt.Println("Cyclomatic Complexity: ", cyclomaticComplexity)
+	fmt.Printf("Number of Edges: %d.\n", numEdges)
+	fmt.Printf("Number of Nodes: %d.\n", numNodes)
+
 	re := regexp.MustCompile(`label="block \d+ ([^"]+)"`)
 	dot = re.ReplaceAllString(dot, `label="$1"`)
 
@@ -349,23 +438,41 @@ func main() {
 	src := `
 package main
 
-func test_main() {
+func complexFunction() int {
 	a := 0
 	b := 1
 	c := 3
 	n := 4
-	for i := 1; i < n; i++ {
-		c = a + b
-		a = b
-		if c > b {
-			b = a + c
-			continue
+	result := 0
+	sum := 0
+
+	for i := 0; i < n; i++ {
+		if с > 2 {
+			a += i
 		} else {
+			b += i
+		}
+
+		for j := 0; j < i; j++ {
+			if j < 3 {
+				c += j
+			} else {
+				sum += j
+			}
+		}
+
+		if a > b {
+			continue
+		} else if b > c {
 			break
 		}
-		b = c
 	}
-	return c
+	if sum > 10 {
+		result = a + b
+		return result
+	} else {
+		return c
+	}
 }
 `
 	fset := token.NewFileSet()
@@ -388,7 +495,7 @@ func test_main() {
 				printCFG(cg)
 
 				dotFmt := genDot(cg)
-
+				fmt.Println(strings.Repeat("-", 18))
 				fmt.Println("DOT Format:")
 				fmt.Println(dotFmt)
 			}

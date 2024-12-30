@@ -1,21 +1,38 @@
 package main
 
-import "fmt"
+func complexFunction() int {
+	a := 0
+	b := 1
+	c := 3
+	n := 4
+	result := 0
+	sum := 0
 
-func main() {
-	x := 10
-	y := 20
-	n := 5
-	for i := 1; i < n; i++ {
-		if x > y {
-			fmt.Printf("%d is greater than %d\n", x, y)
-			y = x + n*i
-		} else if x < y {
-			fmt.Println("x is less than y")
-			x = y + n*i
+	for i := 0; i < n; i++ {
+		if i % 2 {
+			a += i
 		} else {
-			fmt.Println("x is equal to y")
-			x++
+			b += i
 		}
+
+		for j := 0; j < i; j++ {
+			if j % 3 {
+				c += j
+			} else {
+				sum += j
+			}
+		}
+
+		if a > b {
+			continue
+		} else if b > c {
+			break
+		}
+	}
+	if sum > 10 {
+		result = a + b
+		return result
+	} else {
+		return c
 	}
 }
